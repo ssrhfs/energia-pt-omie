@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#102b35"><meta name="description" content="Painel de preços grossistas de eletricidade em Portugal, com histórico e estimativas.">
+<link rel="manifest" href="./manifest.webmanifest"><link rel="icon" href="./icon.svg">
+<title>Energia PT · OMIE</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+:root{color-scheme:dark;--bg:#0b1b22;--panel:#122a33;--line:#25434d;--muted:#9cb2b8;--text:#eff8f7;--green:#5bd2a1;--orange:#f0ad63}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1100px;margin:auto;padding:22px 16px 48px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+h1{font-size:24px;margin:0}.sub,.muted{color:var(--muted);font-size:13px}
+button,select{background:#1b3943;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:9px 12px;cursor:pointer}
+button.active{border-color:var(--green);color:var(--green)}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.card,.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+.k{color:var(--muted);font-size:12px}.v{font-size:26px;font-weight:750;margin:6px 0}.row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.chart{height:270px;position:relative}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}td,th{padding:10px;border-bottom:1px solid var(--line);text-align:right}td:first-child,th:first-child{text-align:left}
+.note{font-size:12px;line-height:1.55;color:var(--muted)}a{color:var(--green)}
+@media(max-width:650px){.cards{grid-template-columns:repeat(2,1fr)}.v{font-size:22px}.chart{height:235px}main{padding:16px 12px 36px}}
+</style></head>
+<body><main>
+<header class="top"><div><h1>⚡ Energia PT · OMIE</h1><div class="sub">Mercado grossista de eletricidade · Portugal</div></div><div class="row"><span id="status" class="muted">A iniciar…</span><button id="refresh">↻ Atualizar</button></div></header>
+<div class="row" style="margin-bottom:12px"><span class="muted">Unidade de preço</span><div><button class="unit active" data-unit="mwh">€/MWh</button><button class="unit" data-unit="kwh">€/kWh</button></div></div>
+<section class="cards">
+<div class="card"><div class="k">Média mais recente</div><div class="v" id="latest">—</div><div class="k" id="latestDate">—</div></div>
+<div class="card"><div class="k">Média dos últimos 30 dias</div><div class="v" id="avg">—</div><div class="k">Dias com dados</div></div>
+<div class="card"><div class="k">Mínimo do período</div><div class="v" id="min">—</div><div class="k" id="minDate">—</div></div>
+<div class="card"><div class="k">Máximo do período</div><div class="v" id="max">—</div><div class="k" id="maxDate">—</div></div>
+</section>
+<section class="panel"><div class="row"><div><b>Histórico diário</b><div class="muted">Preço médio por dia</div></div><div><button class="period active" data-days="30">30 dias</button><button class="period" data-days="7">7 dias</button></div></div><div class="chart"><canvas id="history"></canvas></div></section>
+<section class="panel"><b>Perfil médio por hora</b><div class="muted">Média das horas disponíveis no histórico carregado</div><div class="chart"><canvas id="hours"></canvas></div><p id="cheap" class="muted"></p></section>
+<section class="panel"><b>Estimativa para os próximos dias</b><div class="muted">Só serão mostradas previsões se a fonte fornecer valores futuros identificáveis.</div><div class="chart"><canvas id="forecast"></canvas></div><p id="forecastNote" class="note">Sem previsão confirmada carregada.</p></section>
+<section class="panel"><b>Tabela de preços diários</b><div class="tablewrap"><table><thead><tr><th>Data</th><th>Média</th><th>Mínimo</th><th>Máximo</th><th>Registos</th></tr></thead><tbody id="table"><tr><td colspan="5">A carregar dados…</td></tr></tbody></table></div></section>
+<p class="note">Indicador grossista OMIE: não é o preço final da fatura. Não inclui tarifas de acesso às redes, impostos, taxas, margem comercial ou componentes contratuais. Os preços futuros, quando disponibilizados por uma fonte de futuros, são estimativas e não preços OMIE confirmados. Confirma sempre a fonte e a metodologia antes de tomar decisões.</p>
+<p class="note">Fontes: <a href="https://www.omie.es/pt" target="_blank" rel="noopener">OMIE oficial</a> · <a href="https://www.omip.pt/" target="_blank" rel="noopener">OMIP</a>. Este modelo de demonstração tenta consultar o endpoint público indicado no código; se a estrutura ou permissões da fonte mudarem, a importação poderá falhar.</p>
+</main>
+<script>
+const SOURCE='https://dados.tiagofelicia.pt/data/omie/omie_recentes.csv';
+let unit='mwh',period=30,raw=[],daily=[],charts={};
+const $=id=>document.getElementById(id);
+const fmt=n=>n==null?'—':(unit==='mwh'?n:n/1000).toLocaleString('pt-PT',{minimumFractionDigits:unit==='mwh'?2:4,maximumFractionDigits:unit==='mwh'?2:4})+' €';
+const dateLabel=s=>new Date(s+'T12:00:00').toLocaleDateString('pt-PT');
+function parseCSV(csv){
+ const out=[]; for(const line of csv.replace(/^\uFEFF/,'').split(/\r?\n/)){
+  const c=line.split(','); if(c.length<9||!/^\d{2}\/\d{2}\/\d{4}$/.test(c[0]))continue;
+  const [dd,mm,yy]=c[0].split('/'),date=`${yy}-${mm}-${dd}`,hour=parseInt((c[1]||'').slice(0,2),10),price=Number(String(c[8]).replace(',','.'));
+  if(Number.isFinite(price)&&Number.isFinite(hour))out.push({date,hour,price});
+ } return out;
+}
+function aggregate(){
+ const m=new Map();raw.forEach(x=>{if(!m.has(x.date))m.set(x.date,[]);m.get(x.date).push(x)});
+ daily=[...m].map(([date,a])=>({date,avg:a.reduce((s,x)=>s+x.price,0)/a.length,min:Math.min(...a.map(x=>x.price)),max:Math.max(...a.map(x=>x.price)),count:a.length})).sort((a,b)=>a.date.localeCompare(b.date));
+}
+function drawChart(id,labels,data,type='line',color='#5bd2a1'){
+ if(charts[id])charts[id].destroy();
+ charts[id]=new Chart($(id),{type,data:{labels,datasets:[{data,label:'€/MWh',borderColor:color,backgroundColor:color+'25',fill:type==='line',tension:.25,pointRadius:2,borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.raw)}}},scales:{x:{ticks:{color:'#9cb2b8',maxTicksLimit:8},grid:{display:false}},y:{ticks:{color:'#9cb2b8',callback:v=>unit==='mwh'?v+' €':v.toFixed(3)+' €'},grid:{color:'#25434d'}}}}});
+}
+function render(){
+ if(!daily.length)throw Error('Não foram reconhecidas linhas de preços na fonte.');
+ const real=daily.slice(-30),last=real[real.length-1],lo=real.reduce((a,b)=>a.min<b.min?a:b),hi=real.reduce((a,b)=>a.max>b.max?a:b);
+ $('latest').textContent=fmt(last.avg);$('latestDate').textContent=dateLabel(last.date);
+ $('avg').textContent=fmt(real.reduce((s,x)=>s+x.avg,0)/real.length);$('min').textContent=fmt(lo.min);$('minDate').textContent=dateLabel(lo.date);$('max').textContent=fmt(hi.max);$('maxDate').textContent=dateLabel(hi.date);
+ const view=real.slice(-period);drawChart('history',view.map(x=>dateLabel(x.date)),view.map(x=>unit==='mwh'?x.avg:x.avg/1000));
+ const hourly=Array.from({length:24},()=>[]);raw.slice(-30*24).forEach(x=>{if(x.hour>=0&&x.hour<24)hourly[x.hour].push(x.price)});
+ const av=hourly.map(a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null);drawChart('hours',av.map((_,i)=>String(i).padStart(2,'0')+'h'),av.map(x=>x==null?null:unit==='mwh'?x:x/1000),'bar','#79aee8');
+ const ranked=av.map((v,i)=>({v,i})).filter(x=>x.v!==null).sort((a,b)=>a.v-b.v);
+ $('cheap').textContent=ranked.length?'Horas com menor média no histórico: '+ranked.slice(0,3).map(x=>String(x.i).padStart(2,'0')+'h ('+fmt(x.v)+')').join(' · '):'Sem dados horários suficientes.';
+ drawChart('forecast',[],[],'line','#f0ad63');$('forecastNote').textContent='Não foi carregada uma série de previsões verificável. Para evitar inventar preços, a previsão fica em branco até existir uma fonte de futuros com dados identificáveis.';
+ $('table').innerHTML=daily.slice().reverse().slice(0,35).map(x=>`<tr><td>${dateLabel(x.date)}</td><td>${fmt(x.avg)}</td><td>${fmt(x.min)}</td><td>${fmt(x.max)}</td><td>${x.count}</td></tr>`).join('');
+ $('status').textContent='Atualizado: '+new Date().toLocaleTimeString('pt-PT');
+}
+async function load(){
+ $('status').textContent='A consultar fonte…';
+ try{const r=await fetch(SOURCE,{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);raw=parseCSV(await r.text());aggregate();render();}
+ catch(e){$('status').textContent='Não foi possível obter dados';$('table').innerHTML=`<tr><td colspan="5">Falha na fonte: ${e.message}. Verifique a ligação ou atualize a origem dos dados.</td></tr>`;}
+}
+document.querySelectorAll('.unit').forEach(b=>b.onclick=()=>{unit=b.dataset.unit;document.querySelectorAll('.unit').forEach(x=>x.classList.toggle('active',x===b));if(daily.length)render()});
+document.querySelectorAll('.period').forEach(b=>b.onclick=()=>{period=+b.dataset.days;document.querySelectorAll('.period').forEach(x=>x.classList.toggle('active',x===b));if(daily.length)render()});
+$('refresh').onclick=load;
+if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+load();
+</script></body></html>
